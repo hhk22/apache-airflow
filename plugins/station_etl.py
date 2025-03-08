@@ -14,7 +14,7 @@ def get_station_data(datetime: str):
     print('datetime', datetime)
     year, month, _ = datetime.split("-")
 
-    url = "http://openapi.seoul.go.kr:8088/6b54414a6a6b686831313859434d7146/xml/CardSubwayTime/1/5"
+    url = "http://openapi.seoul.go.kr:8088/<auth_key>/xml/CardSubwayTime/1/5"
 
     result = {}
     for station in stations:
