@@ -126,46 +126,103 @@ with DAG("branch_operator_example", schedule_interval=None) as dag:
 ![](https://velog.velcdn.com/images/khhh9401/post/bccd7ff7-1db5-4fb6-bbd5-b188cdf0510f/image.png)
 
 
+### Trigger Rule
 
+만약, 저 `[fetch_sales_new, fetch_sales_old]` 다음에 새로운 테스크를 추가하면 실행될까? Airflow는 다운스트림 테스크의 조건에 대해서 실행할지 스킵할지 실패로 정할지를 정하는데 그것을 `Trigger Rule` 이라고 부른다. 
 
+먼저 위쪽에 `join_dataset` 이라는 테스크를 추가해보자. 
 
+```
+...
 
+join_dataset = PythonOperator(
+    task_id="join_dataset",
+    python_callable=lambda: print("Join Dataset!!")
+)
 
+...
 
+pick_erp_system >> [fetch_sales_old, fetch_sales_new] >> join_dataset
 
+```
 
+이렇게 하고 실행하게되면, `join_dataset` 이라는 테스크는 `skipped` 처리된다. 아래와 같은 화면으로 에어플로우 그래프상에서는 나타난다. 
 
+![](https://velog.velcdn.com/images/khhh9401/post/a6525fdd-52dd-42fd-a37d-4703b3b94ac2/image.png)
 
+왜냐하면 기본적인 `Trigger Rule` 은 `All success` 이기 때문이다. 
 
+이때 `join_dataset` 이라는 테스크를 정상적으로 실행시키기 위해서는 `Trigger Rule` 을 `none_failed` 로 변경하면 된다. 
 
-- 선형 의존성 유형 <====> 팬인/팬아웃 유형
+```
+join_dataset = PythonOperator(
+    task_id="join_dataset",
+    trigger_rule="none_failed",
+    python_callable=lambda: print("Join Dataset!!")
+)
+```
 
---> 선형의존성 유형: 간단하고 명확하게 정의될 수 있다. 
+### 조건부 테스크 
 
-팬인 / 팬아웃 -> 분기처리 어떻게?
+위에서 설명했던, 코드상에서 조건을 걸어 `task` 를 분기처리하는것은 `Airflow` 의 `Graph` 상에서 파악하기 어렵다고 설명했었는데, 비슷한 예시로 특정 조건에서만 파이프라인을 동작시키고 특정 조건이 만족하지 않을때에는 해당 파이프라인을 `skipped` 처리하는 예시를 설명해보자. 
 
-1. 코드로 분기처리
+그럼 이러한 상황이 있다고 가정해보자. 
 
-항상 가능한것은 아니다. 코드로 분기처리하면 어떤 시스템에서 어떤 파이프라인을 타는지 파악하기 힘들다. 
+`pick_erp_system -> fetch_sales_old/new -> join_dataset -> train_model -> deploy_model`
 
-2. Branch Operator로 분기처리하기. 
+근데 모델을 훈련 후 배포하는 과정이 가장 최신의 모델만 배포하고 싶다면 어떻게 파이프라인을 작성해야할까? 그것을 `Airflow` 에서는 어떻게 구현하는 것이 좋은지 알아보자. 
 
-trigger_rule 을 이용해야함. 
+그럼 위의 파이프라인을 직접 코드로 구현해보자. 
 
-좀더 명확한 branch operator 구조를 가져가기 위해 dummy operator를 추가함. 
+```
+with DAG(
+    "branch_operator_example",
+    schedule_interval="@daily",
+    catchup=True,
+    start_date=pendulum.datetime(2025, 3, 20, tz="utc")
+) as dag:
+    
+    pick_erp_system=BranchPythonOperator(
+        task_id="pick_erp_system",
+        python_callable=_pick_erp_system
+    )
 
-3. 조건부 테스크
+    pick_erp_system >> [fetch_sales_old, fetch_sales_new] >> join_dataset \
+        >> train_model >> deploy_model
 
-4. 트리거 규칙
+    latest_only >> deploy_model
+```
 
-5. Xcom 데이터 사용
+이런식으로 구현하면 되고, 
 
-- template_dict 사용법?
-- Xcom 사용시 주의사항
-    1. 사용량 제한
-    2. 직렬화가 가능해야한다
-    3. 잘못사용하면 원자성이 무너진다. ex) API 토큰
+`latest_only` 테스크는 아래와같이 구현하면 된다. 
 
+```
+def _latest_only(**context):
+    right_window = context["data_interval_end"].date()
 
+    now = pendulum.today("UTC").date()
+    if now != right_window:
+        raise AirflowSkipException("Not the most recent run!")
+    print("It is the last only operator")
+```
 
+그럼 이런식으로 `Airflow` 상에서 `Graph` 가 그려진다. 
 
+![](https://velog.velcdn.com/images/khhh9401/post/2572a8c5-4d86-4508-b1f5-faf5b6d37e26/image.png)
+
+### Task 간 데이터 공유
+
+`Airflow` 의 여러 블로그 글이나 도큐먼트들을 보면 `Task` 간의 데이터 공유는 `Xcom` 을 통해서 할 수 있다. 그러한 예시들은 많이 있으니, 본 글에서는 `XCom` 사용시 주의사항에 대해 몇가지 알아보자. 
+
+#### XCom 사용시 주의사항
+
+1. `XCom` 이 원자성을 무너뜨리는 결과를 초래할 수 있다. 
+
+API access token을 XCom을 통해서 주고 받는다면? 첫번째 테스크에서 준 access token이 두번째 테스크에서는 만료되어 제대로 동작을 안할 수 있습니다. 이때, 두번째 테스크에서는 access token을 사용하기 전, refresh하는 작업이 필요할 수 있습니다. 
+
+2. `XCom` 데이터는 모두 직렬화가 가능해야 한다. 
+
+3. `XCom` 데이터는 메타스토어에 저장되며, 메타스토어의 크기는 크지 않습니다. 
+
+대용량 데이터를 사용할때에는 `AWS S3` 처럼 대용량 클라우드 스토리지를 위한 커스텀 백엔드가 구성되어있어서 편리하게 `serialize/deserialize` 를 할 수 있으니 이런 방법을 적극 고려해야 한다. 
