@@ -77,6 +77,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ./data:/data
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -114,6 +115,15 @@ services:
       retries: 50
       start_period: 30s
     restart: always
+
+  movielens:
+    build: docker/movielens-api
+    image: manning-airflow/movielens-api
+    ports:
+      - "5000:5000"
+    environment:
+      API_USER: airflow
+      API_PASSWORD: airflow
 
   airflow-webserver:
     <<: *airflow-common

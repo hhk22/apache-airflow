@@ -1,0 +1,8 @@
+numpy<1.20
+jinja2<3.1
+werkzeug==2.0.3
+Flask==1.1.1
+itsdangerous==2.0.1
+pandas==0.25.2
+Flask-HTTPAuth==3.3.0
+click==7.1.2
