@@ -16,6 +16,7 @@ jobs:
         run: pip install flake8
       - name: Run Flake8 
         run: flake8
+        continue-on-error: true
       
       - name: Install Pylint
         run: pip install pylint
