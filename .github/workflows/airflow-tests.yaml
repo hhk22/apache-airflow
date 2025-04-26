@@ -28,4 +28,4 @@ jobs:
       - name: Test DAG integrity
         run: |
           export PYTHONPATH=$PYTHONPATH:$(pwd)/dags
-          pytest tests/ --ignore=tests/test_instance.context.py
+          pytest tests/ --ignore=tests/test_instance_context.py
