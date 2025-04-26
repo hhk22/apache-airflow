@@ -11,8 +11,7 @@ def test_redis_ping_method_mocked(mocker):
     )
 
     task = CustomPythonOperator(task_id="test_task")
-    task.run()
-    # task.execute(context=None)
+    task.execute(context=None)
 
 
     mock_ping.assert_called_once()
