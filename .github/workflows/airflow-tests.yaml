@@ -23,7 +23,7 @@ jobs:
         run: find . -name "*.py" | xargs pylint --output-format=colorized || true
       
       - name: Install dependencies
-        run: pip install apache-airflow pytest
+        run: pip install apache-airflow pytest pytest-mock redis
       
       - name: Test DAG integrity
         run: |
