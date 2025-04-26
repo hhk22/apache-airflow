@@ -3,6 +3,10 @@
 
 해당글은 [Apache Airflow 기반의 데이터 파이프라인](https://www.yes24.com/Product/Goods/107878326)을 읽고 정리한 내용입니다. 
 
+----- 
+
+Github: https://github.com/hhk22/apache-airflow/tree/chapter09
+
 -----
 
 - Chapter 09. Airflow Test
@@ -47,4 +51,175 @@ def test_dag_integrity(dag_file):
 이런식으로 비즈니스 로직이 아닌 `DAG` 자체의 문제점을 테스트할 수 있다. 
 
 # CI/CD 파이프라인
+
+여러가지 `CI/CD` 파이프라인이 있겠지만, 책에서는 많이 쓰이는 `Github Actions` 를 소개했다. 그리고 `pylint`, `flake8`, `black` 들로 구성했다. 
+
+사실 이러한 정적테스트 도구들은 중요한 대상이 아니라 넘어간다.  
+
+중요한 부분은 `pytest` 를 `Github Actions` 에서 돌리고, 단위테스트를 작성하는 부분을 집중적으로 살펴보자. 
+
+## 단위 테스트 작성
+
+가장 간단한 테스트코드를 작성해보자. 
+
+```
+def test_example():
+    task = BashOperator(
+        task_id="test",
+        bash_command="echo hello"
+    )
+
+    result = task.execute(context={})
+    assert result == "hello"
+
+$ pytest tests/test_bash_operator
+>>
+tests/test_bash_operator.py .  
+=========== 1 passed in 3.81s =====================
+```
+
+이번엔 좀 더 복잡한 방식으로 `DAG` 를 작성해 테스트 할 수 있다.  
+먼저, `Custom Operator` 를 아래와 같이 작성되어 있다고 하자. 
+
+```
+class CustomRedisHook(BaseHook):
+    def __init__(self, redis_conn_id='my_redis'):
+        super().__init__()
+        self.redis_conn_id = redis_conn_id
+        self._client = None
+
+    def get_conn(self):
+        if not self._client:
+            conn = self.get_connection(self.redis_conn_id)
+            self._client = redis.Redis(
+                host=conn.host,
+                port=conn.port,
+                password=conn.password,
+                db=0,
+                decode_responses=True
+            )
+        return self._client
+
+    def ping(self):
+        client = self.get_conn()
+        return client.ping()
+
+    def __enter__(self):
+        self.get_conn()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+
+
+class CustomPythonOperator(BaseOperator):
+    def execute(self, context):
+        with CustomRedisHook() as hook:
+            if hook.ping():
+                print("PONG from redis!")
+```
+
+`Redis` 를 연결하는 `Custom Hook` 을 구현했고, 그것을 테스트하는 코드를 작성해보자. 
+
+```
+def test_redis_ping_method_mocked(mocker):
+    mock_ping = mocker.patch.object(CustomRedisHook, "ping", return_value=True)
+    mock_connection = mocker.patch.object(
+        CustomRedisHook, 
+        "get_conn", 
+        return_value=redis.Redis(host="redis")
+    )
+
+    task = CustomPythonOperator(task_id="test_task")
+    task.execute(context=None)
+
+    mock_ping.assert_called_once()
+    mock_connection.assert_called_once()
+```
+
+> 이코드를 실행하기 위해선 `pytest-mock` 이 설치되어있어야 한다. 
+
+`ping`, `get_conn` 메소드를 `mocking` 하고, 커스텀 오퍼레이터를 실행시켜, 각각의 메소드들이 실행됐는지 체크하는 함수이다. 
+
+
+## 테스트에서 Task Context로 작업하기 
+
+`airflow` 에서는 `execute` 로 실행할때에는 비즈니스 로직을 검사할때에만 가능하다.  
+실질적으로, `airflow` 메타스토어를 사용하거나, `XCom` 과 같은 데이터를 사용하지 않는다.  
+
+반면, 실제 Airflow처럼 전체 Task 생명주기를 테스트하려면 **`task.run()`** 을 사용해야 한다.
+
+
+
+```
+# conftest.py
+@pytest.fixture
+def test_dag():
+    return DAG(
+        "test_dag",
+        default_args={
+            "owner": "airflow",
+            "start_date": datetime.datetime(2025, 4, 5),
+            "end_date": datetime.datetime(2025, 4, 6)
+        },
+        schedule=datetime.timedelta(days=1)
+    )
+```
+
+이렇게 `test_dag` 를 구성하고, 테스트코드는 아래와 같이 구성하면 된다. 
+
+```
+class SampleDAG(BaseOperator):
+    template_fields = ("_start_date", "_end_date")
+
+    def __init__(self, start_date, end_date, **kwargs):
+        super().__init__(**kwargs)
+        self._start_date = start_date
+        self._end_date = end_date
+    
+    def execute(self, context):
+        context["ti"].xcom_push(key="start_date", value=self._start_date)
+        context["ti"].xcom_push(key="end_date", value=self._end_date)
+        return context
+
+
+def test_execute(test_dag: DAG):
+    task = SampleDAG(
+        task_id="test",
+        start_date="{{ prev_ds }}",
+        end_date="{{ ds }}",
+        dag=test_dag
+    )
+
+    task.run(
+        start_date=test_dag.default_args["start_date"], 
+        end_date=test_dag.default_args["end_date"],
+        ignore_first_depends_on_past=True
+    )
+
+    expected_start_date = datetime.datetime(2025, 4, 5, tzinfo=timezone.utc)
+    expected_end_date = datetime.datetime(2025, 4, 6, tzinfo=timezone.utc)
+    assert task.start_date == expected_start_date
+    assert task.end_date == expected_end_date
+
+```
+
+이런식으로 구성하고 테스트 코드를 돌리면 된다.  
+여기서 `{{prev_ds}}` 와 같은 `jinja` 변수를 선언하는데, `task.execute` 를 실행하게되면 `rendering_template` 이 실행되지 않아 `start_date` 에 올바른 변수가 들어가지않는다.  
+
+하지만, `run` 함수를 실행하게되면, 자동적으로 `prev_ds`, `ds` 값을 렌더링해서 변수로 넣어주게 된다.  
+
+코드도 돌려보면 알겠지만, 실질적인 `airflow metastore` 를 사용하게 된다. 
+
+만약 실질적인 환경에서 테스트코드를 돌려야 할 상황이라면 `task.run` 을 사용하자. 
+
+
+
+
+
 
