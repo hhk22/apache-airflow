@@ -26,4 +26,6 @@ jobs:
         run: pip install apache-airflow pytest
       
       - name: Test DAG integrity
-        run: pytest tests/
+        run: |
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/dags
+          pytest tests/
