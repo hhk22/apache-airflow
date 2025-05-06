@@ -14,4 +14,5 @@ Github: https://github.com/hhk22/apache-airflow/tree/chapter09
 -----
 
 
-Hi!!!!!
+종속성 충돌 관련 문제. 컨테이너 이것을 가능하게 한다. 
+

@@ -154,27 +154,27 @@ def test_redis_ping_method_mocked(mocker):
 
 반면, 실제 Airflow처럼 전체 Task 생명주기를 테스트하려면 **`task.run()`** 을 사용해야 한다.
 
-
-
-```
-# conftest.py
-@pytest.fixture
-def test_dag():
-    return DAG(
-        "test_dag",
-        default_args={
-            "owner": "airflow",
-            "start_date": datetime.datetime(2025, 4, 5),
-            "end_date": datetime.datetime(2025, 4, 6)
-        },
-        schedule=datetime.timedelta(days=1)
-    )
-```
-
-이렇게 `test_dag` 를 구성하고, 테스트코드는 아래와 같이 구성하면 된다. 
+코드를 직접 살펴보게되면, 아래와 같다. 
 
 ```
-class SampleDAG(BaseOperator):
+from airflow.models.baseoperator import BaseOperator
+import datetime
+
+import pendulum
+import pytest
+
+from airflow import DAG
+from airflow.utils.state import DagRunState, TaskInstanceState
+from airflow.utils.types import DagRunType
+
+DATA_INTERVAL_START = pendulum.now("UTC")
+DATA_INTERVAL_END = DATA_INTERVAL_START + datetime.timedelta(days=1)
+
+TEST_DAG_ID = "my_custom_operator_dag"
+TEST_TASK_ID = "my_custom_operator_task"
+
+
+class SampleOperator(BaseOperator):
     template_fields = ("_start_date", "_end_date")
 
     def __init__(self, start_date, end_date, **kwargs):
@@ -183,29 +183,49 @@ class SampleDAG(BaseOperator):
         self._end_date = end_date
     
     def execute(self, context):
+        print(context)
         context["ti"].xcom_push(key="start_date", value=self._start_date)
         context["ti"].xcom_push(key="end_date", value=self._end_date)
-        return context
+        return "context"
 
 
-def test_execute(test_dag: DAG):
-    task = SampleDAG(
-        task_id="test",
-        start_date="{{ prev_ds }}",
-        end_date="{{ ds }}",
-        dag=test_dag
+@pytest.fixture()
+def dag():
+    with DAG(
+        dag_id=TEST_DAG_ID,
+        schedule="@daily",
+        start_date=DATA_INTERVAL_START,
+    ) as dag:
+        SampleOperator(
+            start_date="{{ prev_ds }}",
+            end_date="{{ next_ds  }}",
+            task_id=TEST_TASK_ID
+        )
+    return dag
+
+
+def test_my_custom_operator_execute_no_trigger(dag: DAG):
+    dagrun = dag.create_dagrun(
+        state=DagRunState.RUNNING,
+        execution_date=DATA_INTERVAL_START,
+        data_interval=(DATA_INTERVAL_START, DATA_INTERVAL_END),
+        start_date=DATA_INTERVAL_END,
+        run_type=DagRunType.MANUAL,
+    )
+    ti = dagrun.get_task_instance(
+        task_id=TEST_TASK_ID
     )
 
-    task.run(
-        start_date=test_dag.default_args["start_date"], 
-        end_date=test_dag.default_args["end_date"],
-        ignore_first_depends_on_past=True
-    )
+    ti.task = dag.get_task(task_id=TEST_TASK_ID)
+    ti.render_templates()
+    ti.run(ignore_ti_state=True)
+    
+    start_date = ti.xcom_pull(task_ids=TEST_TASK_ID, key="start_date")
+    end_date = ti.xcom_pull(task_ids=TEST_TASK_ID, key="end_date")
 
-    expected_start_date = datetime.datetime(2025, 4, 5, tzinfo=timezone.utc)
-    expected_end_date = datetime.datetime(2025, 4, 6, tzinfo=timezone.utc)
-    assert task.start_date == expected_start_date
-    assert task.end_date == expected_end_date
+    assert ti.state == TaskInstanceState.SUCCESS
+    assert start_date == DATA_INTERVAL_START.strftime("%Y-%m-%d")
+    assert end_date == DATA_INTERVAL_END.strftime("%Y-%m-%d")
 
 ```
 
