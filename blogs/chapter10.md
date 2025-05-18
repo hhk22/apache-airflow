@@ -5,7 +5,7 @@
 
 ----- 
 
-Github: https://github.com/hhk22/apache-airflow/tree/chapter09
+Github: https://github.com/hhk22/apache-airflow/tree/chapter10
 
 -----
 
